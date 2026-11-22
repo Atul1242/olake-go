@@ -622,6 +622,14 @@ func RetryOnBackoff(ctx context.Context, attempts int, sleep time.Duration, f fu
 	return err
 }
 
+// ExitCode returns ExitCodeRestartRequired when err is marked with ErrRestartRequired, otherwise ExitCodeFailure.
+func ExitCode(err error) int {
+	if strings.Contains(err.Error(), constants.ErrRestartRequired.Error()) {
+		return constants.ExitCodeRestartRequired
+	}
+	return constants.ExitCodeFailure
+}
+
 // ExtractColumnName extracts a column name from regex capture groups.
 // It returns the first non-empty group from the provided groups.
 // This is used when parsing filter expressions where column names can be:

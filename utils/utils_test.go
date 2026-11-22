@@ -1,6 +1,7 @@
 package utils
 
 import (
+	"errors"
 	"fmt"
 	"testing"
 	"time"
@@ -299,6 +300,25 @@ func TestUpdateMethodType(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			assert.Equal(t, tc.expected, UpdateMethodType(tc.in))
+		})
+	}
+}
+
+func TestExitCode(t *testing.T) {
+	testCases := []struct {
+		name     string
+		err      error
+		expected int
+	}{
+		{name: "plain error", err: errors.New("connection reset by peer"), expected: constants.ExitCodeFailure},
+		{name: "non retryable", err: fmt.Errorf("%w: publication missing", constants.ErrNonRetryable), expected: constants.ExitCodeFailure},
+		{name: "restart required", err: fmt.Errorf("%w: %w: partition loss", constants.ErrNonRetryable, constants.ErrRestartRequired), expected: constants.ExitCodeRestartRequired},
+		{name: "restart required wrapped by an outer layer", err: fmt.Errorf("reader[0]: %w", fmt.Errorf("%w: partition loss", constants.ErrRestartRequired)), expected: constants.ExitCodeRestartRequired},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			assert.Equal(t, tc.expected, ExitCode(tc.err))
 		})
 	}
 }

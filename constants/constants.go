@@ -118,6 +118,15 @@ var RelationalDrivers = []DriverType{Postgres, MySQL, Oracle, DB2, MSSQL}
 
 var ParallelCDCDrivers = []DriverType{MongoDB, MSSQL}
 var ErrNonRetryable = fmt.Errorf("failed with non retryable error")
+
+// ErrRestartRequired marks errors a fresh run can fix; the process exits with ExitCodeRestartRequired.
+var ErrRestartRequired = fmt.Errorf("restart required")
+
+const (
+	ExitCodeFailure         = 1
+	ExitCodeRestartRequired = 3
+)
+
 var ErrGlobalContextGroup = fmt.Errorf("global context group error")
 
 // DriversRequiringIncrementalFormatter are drivers that require special formatting for incremental value

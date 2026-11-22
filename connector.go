@@ -7,6 +7,7 @@ import (
 	_ "github.com/datazip-inc/olake/destination/parquet" // registering parquet destination
 	"github.com/datazip-inc/olake/drivers/abstract"
 	protocol "github.com/datazip-inc/olake/protocol"
+	"github.com/datazip-inc/olake/utils"
 	"github.com/datazip-inc/olake/utils/logger"
 	"github.com/datazip-inc/olake/utils/safego"
 )
@@ -18,7 +19,9 @@ func RegisterDriver(driver abstract.DriverInterface) {
 	err := protocol.CreateRootCommand(true, driver).Execute()
 	if err != nil {
 		protocol.ReportFailure(err)
-		logger.Fatal(err)
+		code := utils.ExitCode(err)
+		logger.Errorf("failed with exit code %d: %s", code, err)
+		os.Exit(code)
 	}
 
 	os.Exit(0)
