@@ -283,7 +283,7 @@ func (r *ReaderManager) RestartReader(readerIndex int) (*kgo.Client, error) {
 
 	newReader, err := r.CreateReader(readerID, clientID, true)
 	if err != nil {
-		return nil, fmt.Errorf("%w: %w: failed to recreate kafka reader %d after close: %w", constants.ErrNonRetryable, constants.ErrRestartRequired, readerIndex, err)
+		return nil, fmt.Errorf("%w: failed to recreate kafka reader %d after close: %w", constants.ErrNonRetryable, readerIndex, err)
 	}
 
 	r.readers[readerIndex].reader = newReader
@@ -361,7 +361,7 @@ func (r *ReaderManager) FetchExitState() (stop bool, err error) {
 	case nonRetryableExit:
 		return true, fmt.Errorf("%w: %w: kafka sync aborted due to partition loss during consumer group rebalance", constants.ErrNonRetryable, constants.ErrRestartRequired)
 	default:
-		return true, fmt.Errorf("%w: %w: kafka sync aborted: unexpected exit mode", constants.ErrNonRetryable, constants.ErrRestartRequired)
+		return true, fmt.Errorf("%w: kafka sync aborted: unexpected exit mode", constants.ErrNonRetryable)
 	}
 }
 

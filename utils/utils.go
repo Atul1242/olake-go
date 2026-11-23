@@ -2,6 +2,7 @@ package utils
 
 import (
 	"context"
+	"errors"
 
 	//nolint:gosec // G401: md5 used for non-crypto hashing
 	"crypto/md5"
@@ -624,7 +625,10 @@ func RetryOnBackoff(ctx context.Context, attempts int, sleep time.Duration, f fu
 
 // ExitCode returns ExitCodeRestartRequired when err is marked with ErrRestartRequired, otherwise ExitCodeFailure.
 func ExitCode(err error) int {
-	if strings.Contains(err.Error(), constants.ErrRestartRequired.Error()) {
+	if err == nil {
+		return 0
+	}
+	if errors.Is(err, constants.ErrRestartRequired) {
 		return constants.ExitCodeRestartRequired
 	}
 	return constants.ExitCodeFailure

@@ -14,7 +14,7 @@ import (
 const (
 	normalProcessing int32 = iota // normal processing state
 	gracefulExit                  // stop processing on rebalance (without triggering retries)
-	nonRetryableExit              // stop processing due to unrecoverable kafka errors
+	nonRetryableExit              // stop processing on partition loss; not retried in-process, a fresh run can recover
 )
 
 // ReaderConfig holds configuration for creating Kafka readers
