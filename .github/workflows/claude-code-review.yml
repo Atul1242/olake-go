@@ -1,4 +1,7 @@
-# Claude Code review (anthropics/claude-code-action). Replaces the OpenCodeReview workflow.
+# Claude Code review (anthropics/claude-code-action).
+#
+# Runs next to the OpenCodeReview workflow (ai-code-review.yml) during a two-week trial. Each PR
+# gets both reviews until then. The trial's winner stays, and the other workflow is removed.
 #
 # - Each run waits for maintainer approval in the `ai-code-review` environment, like OCR did.
 # - No run for PRs into master.
@@ -58,10 +61,6 @@ jobs:
     outputs:
       review: ${{ steps.claude.outputs.structured_output }}   # the findings JSON
       conclusion: ${{ steps.claude.outputs.conclusion }}      # 'success' or 'failure'
-    env:
-      GH_TOKEN: ${{ github.token }}                     # lets the `gh` CLI call the GitHub API
-      GH_REPO: ${{ github.repository }}                 # "datazip-inc/olake", so gh knows the repo
-      PR: ${{ github.event.pull_request.number }}       # e.g. 1321
     steps:
       # The layout the action's security doc (docs/security.md) prescribes for pull_request_target:
       # the trusted base branch at the workspace root, the PR's code in a subfolder.
@@ -88,6 +87,12 @@ jobs:
           persist-credentials: false
 
       - name: Prepare review context
+        # Step-level, not job-level: only this step calls the GitHub API, so the Claude step below
+        # never has a GitHub token in its environment.
+        env:
+          GH_TOKEN: ${{ github.token }}                     # lets the `gh` CLI call the GitHub API
+          GH_REPO: ${{ github.repository }}                 # "datazip-inc/olake", so gh knows the repo
+          PR: ${{ github.event.pull_request.number }}       # e.g. 1321
         run: |
           # Stop on the first error, on unset variables and on failures inside pipes.
           set -euo pipefail
@@ -107,10 +112,12 @@ jobs:
           # Every changed file, paginated. Example: go.sum is in the PR but not in the part of the
           # diff Claude reads. With this list it won't claim "go.sum was not updated".
           gh api --paginate "repos/$GH_REPO/pulls/$PR/files?per_page=100" --jq '.[].filename' > /tmp/review/files.txt
-          # The diff. GitHub refuses very large diffs, so the fallback note tells Claude to open the
-          # files instead of failing the run.
-          gh pr diff "$PR" > /tmp/review/pr.diff \
-            || echo "The diff is too large for the GitHub API. Read the changed files in files.txt directly." > /tmp/review/pr.diff
+          # The diff. If GitHub can't return it (a very large diff, or an API error), the note tells
+          # Claude to open the files instead, and the warning marks the run as degraded in the log.
+          if ! gh pr diff "$PR" > /tmp/review/pr.diff; then
+            echo "::warning::Could not fetch the PR diff; Claude reviews from the changed-file list only."
+            echo "The diff could not be fetched (too large for the GitHub API, or an API error). Read the changed files in files.txt directly." > /tmp/review/pr.diff
+          fi
           # Earlier inline review threads with resolved/outdated state and every reply. This stops
           # the flip-flop. Example: review 1 says "move this timeout to config", the author does it,
           # and review 2 would say "hardcode this". With the thread in front of it, Claude drops
@@ -313,7 +320,7 @@ jobs:
             }
             if (outside.length) {
               body += '\n**Findings not on a changed line:**\n'
-                + outside.map((f) => `- ${label[f.severity]} \`${f.path}:${f.line}\` **${clean(f.title)}** ${clean(f.body)}`).join('\n') + '\n';
+                + outside.map((f) => `- ${label[f.severity]} \`${clean(f.path)}:${f.line}\` **${clean(f.title)}** ${clean(f.body)}`).join('\n') + '\n';
             }
             // Collapsed list, so dropped findings are visible without cluttering the comment.
             if (review.skipped?.length) {
