@@ -26,7 +26,7 @@ constants/               Global constants, state-versions.json (state version ma
 tests/                   Separate Go module: integration, 2PC, performance, compatibility suites
 ```
 
-`go.work` links the root module, each driver module and `tests/`. A change in the root module (`types`, `utils`, `destination`, `drivers/abstract`) reaches **every driver**.
+The root `go.work` links the root module and each driver module. `tests/` has its own `go.work`. A change in the root module (`types`, `utils`, `destination`, `drivers/abstract`) reaches **every driver**.
 
 ## How a sync works
 
@@ -69,7 +69,7 @@ tests/                   Separate Go module: integration, 2PC, performance, comp
 - Logging: `utils/logger` only, never `fmt.Println` / `log.Println`. Never log credentials, connection strings or record values.
 - Errors: wrap with context, `fmt.Errorf("failed to <action>: %w", err)`. Mark failures that should not retry with `constants.ErrNonRetryable`. Retry classification is matched by message (`utils.go`), so keep its text intact.
 - JSON tags: `snake_case`, with `omitempty` for optional config.
-- Tests: integration tests are named `TestXxxIntegration` and performance tests `TestXxxPerformance`. Shared harness code lives in `tests/testutils`.
+- Tests: integration tests are named by driver and suite (`TestPostgresSync`, `TestPostgresDiscover`, `TestPostgres2PC`) and performance tests `TestXxxPerformance`. Shared harness code lives in `tests/testutils`.
 - Lint: `make lint` (golangci-lint for the root module and the tests module, plus a `go mod tidy -diff` check), and `make gofmt`. Commit the `go.sum` / `go.work.sum` changes that `make gomod` produces.
 
 ## Build and test
@@ -81,6 +81,7 @@ make test.unit
 make test.integration.<driver>         # discover + sync + 2PC suites for one driver
 make test.discover.<driver> | test.sync.<driver> | test.2pc.<driver>
 make test.compatibility.<driver>       # upgrade-from-old-state suite
+make test.performance.<driver>         # benchmarks against remote instances (no local stack)
 make iceberg.jar                       # rebuild the Java writer
 ```
 

@@ -61,6 +61,12 @@ These apply to every finding, and most strictly to Important ones.
 - **Resources:** close rows, cursors, connections, gRPC streams and files on every path, including errors. Bound buffers (`MaxDestinationBatchBytes`).
 - **Tests:** a new or changed type mapping updates the integration test data. A state version adds compatibility coverage.
 
+## Code structure (Nit, new or changed code only)
+
+- Driver-specific logic outside `drivers/<name>/` (for example in `drivers/abstract/`, `types/`, `destination/` or `utils/`). Name the driver it is specific to.
+- A new helper that duplicates an existing one. Cite the existing helper's `file:line`.
+- A changed function in type mapping, `utils/typeutils/`, state handling or chunking that has no test. Name the input case that is untested (for example unsigned max, NaN, nil, timezone). If the case needs a real database or destination, name the integration suite to extend instead, for example `TestPostgresSync` in `tests/postgres/postgres_test.go`.
+
 ## Do not report
 
 - Anything `golangci-lint`, `gofmt` or `go vet` catch, and formatting or import order.

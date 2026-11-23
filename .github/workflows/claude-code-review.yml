@@ -155,6 +155,9 @@ jobs:
           #     matters or edge cases are likely". `xhigh` and `max` cost more and can overthink.
           #   --max-turns 80: upper bound on tool calls and replies, so a confused run stops
           #     instead of looping.
+          #   --max-budget-usd 10: stops the run once it has spent $10 (list price). A stopped run fails
+          #     and posts nothing. Placeholder: set it to about 2x the cost of a large-PR review, read
+          #     from total_cost_usd in the "Review with Claude" step log of the first runs.
           #   --permission-mode dontAsk: deny every tool or path not allowed, without asking. In CI
           #     there's nobody to ask.
           #   --allowedTools: read the checkout (/** = relative to the repo root) and the saved
@@ -171,6 +174,7 @@ jobs:
             --model opus
             --effort high
             --max-turns 80
+            --max-budget-usd 10
             --permission-mode dontAsk
             --allowedTools "Read(/**),Read(//tmp/review/**)"
             --disallowedTools "Bash,Edit,Write,NotebookEdit,WebFetch,WebSearch,Agent,Task,Read(//proc/**),Read(//etc/**),Read(//root/**),Read(//sys/**),Read(//run/**),Read(**/.env),Read(**/.env.*),Read(**/*.pem),Read(**/*.key)"
