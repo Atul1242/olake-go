@@ -65,11 +65,14 @@ func (k *Kafka) PreCDC(ctx context.Context, streams []types.StreamInterface) err
 		Dialer:                      k.dialer,
 		AdminClient:                 k.adminClient,
 		ThreadsEqualTotalPartitions: k.config.ThreadsEqualTotalPartitions,
+		Membership:                  k.membership,
 	})
 
-	// remove stale consumers before creating new readers
-	if err := k.readerManager.RemoveExistingConsumers(ctx, k.client); err != nil {
-		return fmt.Errorf("failed to remove existing consumers: %w", err)
+	// remove stale consumers before creating new readers, unless existing members must keep their seats
+	if !k.membership.KeepMembers {
+		if err := k.readerManager.RemoveExistingConsumers(ctx, k.client); err != nil {
+			return fmt.Errorf("failed to remove existing consumers: %w", err)
+		}
 	}
 
 	// create new readers and wait for partition assignment
