@@ -66,8 +66,7 @@ func (s *uploadServer) SendClientRequest(_ context.Context, req any) (any, error
 	return nil, fmt.Errorf("unexpected %v", payload.GetType())
 }
 
-// newTestWriter is a writer on an uploadServer. As in production, an upsert writer whose update type
-// needs the table index gets an index thread, returned for the test to read, and any other gets none.
+// newTestWriter returns a writer on a fake server, and its index thread (nil in eq or append mode).
 func newTestWriter(t *testing.T, updateType types.UpdateType, upsertMode bool, partitionInfo []internal.PartitionInfo) (*ArrowWriter, *uploadServer, *types.StreamIndexThread) {
 	t.Helper()
 
@@ -261,63 +260,71 @@ func TestEnsureReadableUploadsNamedOpenFiles(t *testing.T) {
 	}
 }
 
-// In eq mode a row's first change in a sync equality deletes the version an earlier sync committed,
-// an insert has none to delete, and each later change to the row in the same sync deletes the
-// previous one by position.
+// In eq mode a row's first change in a sync gets an equality delete ("c" gets none), and a repeat deletes the previous row by position.
 func TestExtractEqModeDeletes(t *testing.T) {
+	type change struct{ op, id string }
 	const dataFile = "s3://b/t/data/f1.parquet" // the first path the uploadServer hands out
 
 	testCases := []struct {
 		name              string
-		appendMode        bool
-		ops               [][2]string // {op type, olake id}
+		upsertMode        bool
+		ops               []change
 		equalityDeletes   []string
 		positionalDeletes []PositionalDelete
 	}{
 		{
-			name: "steady-state inserts write no deletes",
-			ops:  [][2]string{{"c", "1"}, {"c", "2"}},
+			name:       "steady-state inserts write no deletes",
+			upsertMode: true,
+			ops:        []change{{"c", "1"}, {"c", "2"}},
 		},
 		{
 			name:              "repeated insert of same id in same sync deletes the earlier insert by position",
-			ops:               [][2]string{{"c", "1"}, {"c", "1"}},
+			upsertMode:        true,
+			ops:               []change{{"c", "1"}, {"c", "1"}},
 			positionalDeletes: []PositionalDelete{{FilePath: dataFile, Position: 0}},
 		},
 		{
 			name:              "insert then update in same sync deletes the insert by position",
-			ops:               [][2]string{{"c", "1"}, {"u", "1"}},
+			upsertMode:        true,
+			ops:               []change{{"c", "1"}, {"u", "1"}},
 			positionalDeletes: []PositionalDelete{{FilePath: dataFile, Position: 0}},
 		},
 		{
 			name:              "insert then delete in same sync deletes the insert by position",
-			ops:               [][2]string{{"c", "1"}, {"d", "1"}},
+			upsertMode:        true,
+			ops:               []change{{"c", "1"}, {"d", "1"}},
 			positionalDeletes: []PositionalDelete{{FilePath: dataFile, Position: 0}},
 		},
 		{
 			name:            "overlap-window insert writes equality delete",
-			ops:             [][2]string{{"i", "1"}},
+			upsertMode:      true,
+			ops:             []change{{"i", "1"}},
 			equalityDeletes: []string{"1"},
 		},
 		{
 			name:              "overlap-window insert then update keeps equality delete and deletes the insert by position",
-			ops:               [][2]string{{"i", "1"}, {"u", "1"}},
+			upsertMode:        true,
+			ops:               []change{{"i", "1"}, {"u", "1"}},
 			equalityDeletes:   []string{"1"},
 			positionalDeletes: []PositionalDelete{{FilePath: dataFile, Position: 0}},
 		},
 		{
 			name:            "update and delete write equality deletes",
-			ops:             [][2]string{{"u", "1"}, {"d", "2"}},
+			upsertMode:      true,
+			ops:             []change{{"u", "1"}, {"d", "2"}},
 			equalityDeletes: []string{"1", "2"},
 		},
 		{
 			name:              "delete then re-insert in same sync keeps only the re-insert",
-			ops:               [][2]string{{"d", "1"}, {"c", "1"}},
+			upsertMode:        true,
+			ops:               []change{{"d", "1"}, {"c", "1"}},
 			equalityDeletes:   []string{"1"},
 			positionalDeletes: []PositionalDelete{{FilePath: dataFile, Position: 0}},
 		},
 		{
 			name:            "repeated updates keep only the latest by position",
-			ops:             [][2]string{{"u", "1"}, {"u", "1"}, {"u", "1"}},
+			upsertMode:      true,
+			ops:             []change{{"u", "1"}, {"u", "1"}, {"u", "1"}},
 			equalityDeletes: []string{"1"},
 			positionalDeletes: []PositionalDelete{
 				{FilePath: dataFile, Position: 0},
@@ -325,8 +332,9 @@ func TestExtractEqModeDeletes(t *testing.T) {
 			},
 		},
 		{
-			name: "interleaved changes to inserted ids delete each previous occurrence",
-			ops:  [][2]string{{"c", "1"}, {"c", "2"}, {"u", "1"}, {"d", "2"}, {"u", "1"}},
+			name:       "interleaved changes to inserted ids delete each previous occurrence",
+			upsertMode: true,
+			ops:        []change{{"c", "1"}, {"c", "2"}, {"u", "1"}, {"d", "2"}, {"u", "1"}},
 			positionalDeletes: []PositionalDelete{
 				{FilePath: dataFile, Position: 0},
 				{FilePath: dataFile, Position: 1},
@@ -334,27 +342,27 @@ func TestExtractEqModeDeletes(t *testing.T) {
 			},
 		},
 		{
-			name: "snapshot rows are not tracked",
-			ops:  [][2]string{{"r", "1"}, {"r", "1"}},
+			name:       "snapshot rows are not tracked",
+			upsertMode: true,
+			ops:        []change{{"r", "1"}, {"r", "1"}},
 		},
 		{
-			name:       "append mode writes no deletes",
-			appendMode: true,
-			ops:        [][2]string{{"u", "1"}, {"u", "1"}, {"d", "2"}},
+			name: "append mode writes no deletes",
+			ops:  []change{{"u", "1"}, {"u", "1"}, {"d", "2"}},
 		},
 	}
 
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
-			w, _, _ := newTestWriter(t, types.UpdateTypeEquality, !tc.appendMode, nil)
+			w, _, _ := newTestWriter(t, types.UpdateTypeEquality, tc.upsertMode, nil)
 			records := make([]types.RawRecord, 0, len(tc.ops))
-			for _, op := range tc.ops {
-				records = append(records, testRecord(op[1], op[0], ""))
+			for _, c := range tc.ops {
+				records = append(records, testRecord(c.id, c.op, ""))
 			}
 
 			require.NoError(t, w.extract(context.Background(), records))
 
-			writer := w.writers[""] // the writer extract filled; with no partitions its key is ""
+			writer := w.writers[""] // unpartitioned, so extract uses the writer under key ""
 			assert.ElementsMatch(t, tc.equalityDeletes, writer.equalityDeletes)
 			assert.ElementsMatch(t, tc.positionalDeletes, writer.positionalDeletes)
 			for _, rec := range records {
@@ -375,7 +383,7 @@ func TestExtractDuplicateAcrossDataFiles(t *testing.T) {
 
 	require.NoError(t, w.extract(ctx, []types.RawRecord{testRecord("1", "c", "a")}))
 
-	// what Write does after a batch, then the data file rolls and the next extract opens a new one
+	// clear the batch as Write does, and drop the data file so the next extract opens a new one
 	writer.data = writer.data[:0]
 	writer.dataWriter = nil
 
