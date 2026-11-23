@@ -209,6 +209,16 @@ For advanced users and automation, OLake Go's core logic is exposed via a powerf
 * `sync`: Executes the data replication job, extracting from the source and writing to the destination.
 * `clear-destination` : Clears data in the destination, only for the selected streams defined in `streams.json`.
 
+#### Exit Codes
+
+When a command finishes, OLake Go exits with one of these codes:
+
+| Exit code | Meaning | What to do |
+|---|---|---|
+| `0` | The command finished successfully. | Nothing. |
+| `1` | The command failed. | Check the error in the logs and fix the cause (for example, the config, credentials or source). If the error is temporary (for example, a network timeout), increase the retry count in the source config (`retry_count` or `backoff_retry_count`) instead of rerunning the job yourself. |
+| `3` | The command failed, but a fresh run is expected to succeed (for example, Kafka partition loss during a consumer group rebalance). | Run the job again. |
+
 **Find out more about CLI [here](https://olake.io/docs/install/docker-cli/).**
 
 ---
