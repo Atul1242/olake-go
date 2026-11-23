@@ -3,9 +3,18 @@ package types
 import (
 	"fmt"
 	"regexp"
+	"slices"
 	"strings"
 
 	"github.com/datazip-inc/olake/utils"
+	"github.com/datazip-inc/olake/utils/errs"
+)
+
+const (
+	// codeWriteModeNoneAvailable marks a stream whose source and destination share no write mode.
+	codeWriteModeNoneAvailable = "catalog.write_mode_none_available"
+	// codeWriteModeNotAvailable marks a stream whose write mode is not in its available_write_modes.
+	codeWriteModeNotAvailable = "catalog.write_mode_not_available"
 )
 
 // Input/Processed object for Stream
@@ -318,12 +327,10 @@ func (s *ConfiguredStream) AppendModeEnabled() bool {
 	return s.defaultStreamProperties().AppendMode
 }
 
-// GetUpdateType returns the stream's delete format. Upsert streams always use positional deletes;
-// otherwise an omitted (nil) update_type follows the stream's default_stream_properties
+// GetUpdateType returns the stream's delete format. An omitted (nil) update_type follows
+// the stream's default_stream_properties. Kafka discover defaults that to positional so
+// upsert (no create vs update) does not fall through to equality; an explicit dv is kept.
 func (s *ConfiguredStream) GetUpdateType() UpdateType {
-	if s.ResolveUpsertOp() {
-		return UpdateTypePosition
-	}
 	if s.StreamMetadata.UpdateType == nil {
 		return resolveConfigurableField(s.defaultStreamProperties().UpdateType, UpdateTypeEquality)
 	}
@@ -339,6 +346,10 @@ func (s *ConfiguredStream) ValidateUpdateType(destinationType DestinationType) e
 	}
 
 	available := s.Stream.AvailableUpdateTypes
+	if available != nil && len(available) == 0 {
+		return fmt.Errorf("no update mode is readable by the target query engines and writable to the destination; use append mode")
+	}
+
 	// Discover clears update_type when the target query engines can no longer read it; blank
 	// would otherwise default to equality and silently switch the stream's delete format.
 	if s.StreamMetadata.UpdateType != nil && *s.StreamMetadata.UpdateType == "" && len(available) > 0 {
@@ -346,6 +357,31 @@ func (s *ConfiguredStream) ValidateUpdateType(destinationType DestinationType) e
 	}
 
 	return s.GetUpdateType().ValidateAgainst(available)
+}
+
+// ValidateWriteMode reports whether the stream's write mode is one its available_write_modes
+// allow. Parquet always appends, whatever append_mode says. A nil list means the catalog predates
+// write modes, so nothing is checked.
+func (s *ConfiguredStream) ValidateWriteMode(destinationType DestinationType) error {
+	available := s.Stream.AvailableWriteModes
+	if available == nil {
+		return nil
+	}
+	if len(available) == 0 {
+		return errs.Precondition(errs.ConfigInvalid, codeWriteModeNoneAvailable,
+			fmt.Errorf("the source and destination have no write mode in common"))
+	}
+
+	mode := WriteModeAppend
+	if s.UpsertApplies(destinationType) {
+		mode = WriteModeUpsert
+	}
+	if !slices.Contains(available, mode) {
+		return errs.Precondition(errs.ConfigInvalid, codeWriteModeNotAvailable,
+			fmt.Errorf("the source and destination support only %v, got %s", available, mode))
+	}
+
+	return nil
 }
 
 // UpsertApplies reports whether append_mode, update_type and dedup_keys affect what is written.

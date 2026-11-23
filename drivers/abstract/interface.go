@@ -51,3 +51,16 @@ type DriverInterface interface {
 	StreamChanges(ctx context.Context, identifier int, metadataState map[string]any, processFn CDCMsgFn) (any, error)
 	PostCDC(ctx context.Context, identifier int) error // to save state
 }
+
+// UpdateTypeRestricter is implemented by a driver that can feed only some delete formats, e.g.
+// Kafka upserts always write positional deletes. Discover calls it after the config is loaded but
+// before Setup, so it must not need a connection.
+type UpdateTypeRestricter interface {
+	SupportedUpdateTypes() []types.UpdateType
+}
+
+// WriteModeRestricter is implemented by a driver that allows only some write modes, e.g. Postgres
+// preserve_toast_values allows only upsert.
+type WriteModeRestricter interface {
+	SupportedWriteModes() []types.WriteMode
+}
