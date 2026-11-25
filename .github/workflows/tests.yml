@@ -47,7 +47,6 @@ jobs:
       contents: read
       pull-requests: read
       packages: read
-      actions: read
       statuses: read
     with:
       go-checks: true

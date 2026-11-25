@@ -44,7 +44,6 @@ jobs:
       contents: read
       pull-requests: read
       packages: read
-      actions: read
     outputs:
       drivers: ${{ steps.drivers.outputs.drivers }}
       sources: ${{ steps.sources.outputs.sources }}
