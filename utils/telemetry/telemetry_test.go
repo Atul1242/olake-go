@@ -197,12 +197,21 @@ func TestEventPropertyNames(t *testing.T) {
 		{
 			name: "failure",
 			track: func() {
-				TrackFailure("sync", "postgres", "sync-1", errs.Failure{
+				TrackFailure("sync", "postgres", "sync-1", destination, errs.Failure{
 					Category: errs.AuthFailed, ClassifiedBy: errs.ClassifiedByVendor,
 					Code: "28P01", ErrorType: "*pgconn.PgError",
+					Origin: "AwsCredentialsProviderChain.resolveCredentials", Operation: "RECORDS", HTTPStatus: 404,
+					ServerErrorType: "WarehouseNotFound",
 				})
 			},
 			expectedKeys: []string{"command", "error_source", "category", "classified_by", "sync_id", "code", "error_type"},
+			expectedValues: map[string]any{
+				"catalog_type":      "glue",
+				"origin":            "AwsCredentialsProviderChain.resolveCredentials",
+				"operation":         "RECORDS",
+				"http_status":       404,
+				"server_error_type": "WarehouseNotFound",
+			},
 		},
 	}
 
@@ -231,16 +240,17 @@ func TestTrackFailureOmitsAbsentFields(t *testing.T) {
 	markInitDone()
 
 	testCases := []struct {
-		name           string
-		syncID         string
-		failure        errs.Failure
-		expectedAbsent []string
+		name              string
+		syncID            string
+		destinationConfig *types.WriterConfig
+		failure           errs.Failure
+		expectedAbsent    []string
 	}{
 		{
 			name:           "no sync id outside sync",
 			syncID:         "",
 			failure:        errs.Failure{Category: errs.ConfigInvalid, ClassifiedBy: errs.ClassifiedByPrecondition},
-			expectedAbsent: []string{"sync_id", "code", "error_type"},
+			expectedAbsent: []string{"sync_id", "code", "error_type", "catalog_type", "origin", "operation", "http_status", "server_error_type"},
 		},
 		{
 			name:           "unclassified carries the type but no code",
@@ -248,12 +258,19 @@ func TestTrackFailureOmitsAbsentFields(t *testing.T) {
 			failure:        errs.Failure{Category: errs.Unclassified, ClassifiedBy: errs.ClassifiedByDefault, ErrorType: "*errors.errorString"},
 			expectedAbsent: []string{"sync_id", "code"},
 		},
+		{
+			name:              "no catalog for a destination other than iceberg",
+			syncID:            "",
+			destinationConfig: &types.WriterConfig{Type: types.Parquet},
+			failure:           errs.Failure{Category: errs.AuthFailed, ClassifiedBy: errs.ClassifiedByVendor},
+			expectedAbsent:    []string{"catalog_type"},
+		},
 	}
 
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
 			capture := stubClient(t)
-			TrackFailure("check", "postgres", tc.syncID, tc.failure)
+			TrackFailure("check", "postgres", tc.syncID, tc.destinationConfig, tc.failure)
 			drain()
 
 			events := capture.events(t)
@@ -436,7 +453,7 @@ func TestTrackEventsSurviveASendFailure(t *testing.T) {
 		{name: "discover", track: func() { TrackDiscover(1, "postgres") }},
 		{name: "sync started", track: func() { TrackSyncStarted("s", mix, "postgres", destination, 1) }},
 		{name: "sync completed", track: func() { TrackSyncCompleted("s", mix, "postgres", destination, true, 1, 1) }},
-		{name: "failure", track: func() { TrackFailure("sync", "postgres", "s", errs.Failure{Category: errs.AuthFailed}) }},
+		{name: "failure", track: func() { TrackFailure("sync", "postgres", "s", destination, errs.Failure{Category: errs.AuthFailed}) }},
 	}
 
 	for _, tc := range testCases {

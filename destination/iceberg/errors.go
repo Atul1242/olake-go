@@ -3,22 +3,33 @@ package iceberg
 import (
 	"errors"
 	"fmt"
+	"os"
 	"regexp"
+	"strconv"
 	"strings"
 
 	"github.com/datazip-inc/olake/destination"
 	"github.com/datazip-inc/olake/pkg/objstorage"
 	"github.com/datazip-inc/olake/utils/errs"
+	"github.com/datazip-inc/olake/utils/logger"
 	"google.golang.org/genproto/googleapis/rpc/errdetails"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
+	"google.golang.org/protobuf/proto"
 )
 
 // Stamped by the writer on every ErrorInfo it attaches, so details from other libraries
 // passing through are ignored.
+// component names this destination in failure reports.
+const component = "iceberg"
+
 const (
 	javaErrorDomain            = "olake.iceberg"
 	javaMetadataCode           = "code"
+	javaMetadataOrigin         = "origin"
+	javaMetadataOperation      = "operation"
+	javaMetadataHTTPStatus     = "http_status"
+	javaMetadataServerError    = "server_error_type"
 	codeCatalogConfigInvalid   = "iceberg.catalog_config_invalid"
 	codeUnsupportedCatalogType = "iceberg.unsupported_catalog_type"
 	codeJarNotFound            = "iceberg.jar_not_found"
@@ -31,6 +42,54 @@ var errJVMStart = errors.New("failed to start iceberg java writer and setup logg
 
 // startupCause pulls the root cause's class out of the line OlakeRpcServer prints on its way out.
 var startupCause = regexp.MustCompile(`Iceberg writer failed to start \[([^\]]+)\]`)
+
+// startupReportPath reserves the file the writer reports a failure to start in. Empty when it
+// cannot: the report only adds detail, so it must never be why the writer fails to start.
+func startupReportPath() string {
+	file, err := os.CreateTemp("", "olake-iceberg-startup-*.pb")
+	if err != nil {
+		logger.Debugf("startup failure report unavailable: %s", err)
+		return ""
+	}
+	_ = file.Close()
+	return file.Name()
+}
+
+// withStartupReport classifies a failure to start from the report the writer left at path: the
+// same ErrorInfo a failed call carries, written to a file because no call exists yet. err is
+// returned as is where the writer wrote none: an older writer, or one killed before it could.
+func withStartupReport(err error, path string) error {
+	data, readErr := os.ReadFile(path)
+	if readErr != nil || len(data) == 0 {
+		return err
+	}
+	report := &errdetails.ErrorInfo{}
+	if proto.Unmarshal(data, report) != nil {
+		return err
+	}
+	reported, detailErr := status.New(codes.Internal, "").WithDetails(report)
+	if detailErr != nil {
+		return err
+	}
+	f := fromErrorInfo(reported)
+	if f == nil {
+		return err
+	}
+	f.Component = component
+	return errs.Attach(err, *f)
+}
+
+// restStatusCategories classifies a RESTException, Iceberg's exception for a status it has no class
+// of its own for, by the HTTP status the catalog answered with.
+var restStatusCategories = map[int]errs.Category{
+	401: errs.AuthFailed,
+	403: errs.PermissionDenied,
+	404: errs.ConfigInvalid, // the configured address serves nothing at that path
+	405: errs.ConfigInvalid, // the configured address does not serve the Iceberg REST API
+	429: errs.ResourceExhausted,
+	502: errs.NetworkUnreachable,
+	504: errs.Timeout,
+}
 
 // javaExceptions maps the exception the Iceberg JVM caught to a failure category.
 var javaExceptions = map[string]errs.Category{
@@ -88,6 +147,22 @@ var javaExceptions = map[string]errs.Category{
 	"CertificateException":       errs.TLSFailed,
 	"SSLPeerUnverifiedException": errs.TLSFailed,
 
+	// TLS failures as the innermost cause reports them.
+	"SSLException":                    errs.TLSFailed,
+	"SunCertPathBuilderException":     errs.TLSFailed,
+	"CertPathValidatorException":      errs.TLSFailed,
+	"CertificateExpiredException":     errs.TLSFailed,
+	"CertificateNotYetValidException": errs.TLSFailed,
+
+	// A configured address that does not parse.
+	"URISyntaxException": errs.ConfigInvalid,
+
+	// The writer's port is already in use.
+	"BindException": errs.ConcurrencyConflict,
+
+	// Raised by the AWS SDK before a request is sent, for missing or conflicting client settings.
+	"SdkClientException": errs.ConfigInvalid,
+
 	// REST catalog HTTP status shapes, and leftover REST / Hive / JDBC / Glue classes.
 	"ServiceUnavailableException":              errs.NetworkUnreachable,
 	"ServiceFailureException":                  errs.CatalogError,
@@ -122,12 +197,14 @@ var javaExceptions = map[string]errs.Category{
 	"UnsupportedOperationException": errs.UnsupportedFeature,
 
 	// Defects in the writer, not conditions a user can fix.
-	"NoClassDefFoundError":     errs.InternalError,
-	"ClassNotFoundException":   errs.InternalError,
-	"NullPointerException":     errs.InternalError,
-	"AssertionError":           errs.InternalError,
-	"IllegalArgumentException": errs.InternalError,
-	"IllegalStateException":    errs.InternalError,
+	"NoClassDefFoundError":        errs.InternalError,
+	"ClassNotFoundException":      errs.InternalError,
+	"NullPointerException":        errs.InternalError,
+	"AssertionError":              errs.InternalError,
+	"IllegalArgumentException":    errs.InternalError,
+	"IllegalStateException":       errs.InternalError,
+	"ExceptionInInitializerError": errs.InternalError,
+	"ClassCastException":          errs.InternalError,
 }
 
 // sqlStateClasses maps the two-character SQLSTATE class a JDBC catalog reports to a category.
@@ -170,7 +247,7 @@ var grpcCategories = map[codes.Code]errs.Category{
 
 // Registered so ReportFailure can classify without knowing which connector ran. Only gRPC
 // evidence lives here; DNS, TLS and socket failures are shared and belong to utils/errs.
-func init() { errs.Register("iceberg", classify) }
+func init() { errs.Register(component, classify) }
 
 // classify reads the gRPC status from the Iceberg JVM, then the writer marker. Order matters: a
 // JVM that is not listening explains a write failure better than the write failure does.
@@ -269,44 +346,55 @@ func fromErrorInfo(grpcStatus *status.Status) *errs.Failure {
 
 		// A JDBC SQLSTATE is more precise and shares a code space with the Postgres and Db2
 		// sources; otherwise the exception names the failure.
-		code := info.GetMetadata()[javaMetadataCode]
+		metadata := info.GetMetadata()
+		code := metadata[javaMetadataCode]
 		if code == "" {
 			code = exception
 		}
 
-		if category, mapped := javaExceptions[exception]; mapped {
-			return &errs.Failure{
-				Category:     category,
-				ClassifiedBy: errs.ClassifiedByVendor,
-				Code:         code,
-			}
+		f := &errs.Failure{Code: code, Operation: metadata[javaMetadataOperation]}
+		// The writer sends "package.Class.method"; Class.method is enough to name the throw site.
+		if parts := strings.Split(metadata[javaMetadataOrigin], "."); len(parts) >= 2 {
+			f.Origin = strings.Join(parts[len(parts)-2:], ".")
 		}
-		// The JVM writes straight to object storage through its own AWS SDK, and raises a bare
-		// S3Exception whatever the reason — the meaning is in the service code, the same one
-		// the S3 source and the parquet destination read.
-		if category, mapped := objstorage.ServiceCodeCategories[code]; mapped {
-			return &errs.Failure{
-				Category:     category,
-				ClassifiedBy: errs.ClassifiedByVendor,
-				Code:         code,
-			}
+		// Absent when the failure was not an HTTP response; anything unparsable is dropped the same way.
+		f.HTTPStatus, _ = strconv.Atoi(metadata[javaMetadataHTTPStatus])
+		f.ServerErrorType = metadata[javaMetadataServerError]
+
+		if category, mapped := javaCategory(exception, code, metadata[javaMetadataCode], f.ServerErrorType, f.HTTPStatus); mapped {
+			f.Category, f.ClassifiedBy = category, errs.ClassifiedByVendor
+		} else {
+			// No rule covers it yet. The class name is what a rule would be written from.
+			f.Category, f.ClassifiedBy, f.ErrorType = errs.Unclassified, errs.ClassifiedByDefault, info.GetReason()
 		}
-		// A JDBC catalog raises classes this table cannot enumerate, but supplies a SQLSTATE
-		// whose class is standardized — the same code space the SQL sources report.
-		if category, mapped := sqlStateClasses[sqlStateClass(info.GetMetadata()[javaMetadataCode])]; mapped {
-			return &errs.Failure{
-				Category:     category,
-				ClassifiedBy: errs.ClassifiedByVendor,
-				Code:         code,
-			}
-		}
-		// No rule covers it yet. The class name is what a rule would be written from.
-		return &errs.Failure{
-			Category:     errs.Unclassified,
-			ClassifiedBy: errs.ClassifiedByDefault,
-			Code:         code,
-			ErrorType:    info.GetReason(),
-		}
+		return f
 	}
 	return nil
+}
+
+// javaCategory runs the writer's evidence through each table, most specific first.
+func javaCategory(exception, code, sqlState, serverErrorType string, httpStatus int) (errs.Category, bool) {
+	// Iceberg's catch-all for a status it has no class for. The server's error type says what it
+	// was where it names an exception the table knows; otherwise the status does.
+	if exception == "RESTException" {
+		if category, mapped := javaExceptions[serverErrorType]; mapped {
+			return category, true
+		}
+		if category, mapped := restStatusCategories[httpStatus]; mapped {
+			return category, true
+		}
+	}
+	if category, mapped := javaExceptions[exception]; mapped {
+		return category, true
+	}
+	// The JVM writes straight to object storage through its own AWS SDK, and raises a bare
+	// S3Exception whatever the reason — the meaning is in the service code, the same one
+	// the S3 source and the parquet destination read.
+	if category, mapped := objstorage.ServiceCodeCategories[code]; mapped {
+		return category, true
+	}
+	// A JDBC catalog raises classes this table cannot enumerate, but supplies a SQLSTATE
+	// whose class is standardized — the same code space the SQL sources report.
+	category, mapped := sqlStateClasses[sqlStateClass(sqlState)]
+	return category, mapped
 }

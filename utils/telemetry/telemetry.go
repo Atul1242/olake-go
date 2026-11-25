@@ -263,7 +263,9 @@ func TrackSyncCompleted(syncID string, mix types.StreamMix, sourceType string, d
 // TrackFailure reports why a command failed. The payload is a classification, not a
 // description: every field is a constant from this repo or a code the vendor defines, so no
 // config value, server message or user input can reach it. Absent fields are normal.
-func TrackFailure(command, errorSource, syncID string, f errs.Failure) {
+func TrackFailure(command, errorSource, syncID string, destinationConfig *types.WriterConfig, f errs.Failure) {
+	_, catalogType := destinationShape(destinationConfig)
+
 	send("failure - cli", func() {
 		// The rest of the run's shape is on the sync events, reachable through sync_id.
 		props := map[string]interface{}{
@@ -282,6 +284,23 @@ func TrackFailure(command, errorSource, syncID string, f errs.Failure) {
 		}
 		if f.ErrorType != "" {
 			props["error_type"] = f.ErrorType
+		}
+		// Set only when an Iceberg destination config was read.
+		if catalogType != "" {
+			props["catalog_type"] = catalogType
+		}
+		// Set only by the Iceberg writer.
+		if f.Origin != "" {
+			props["origin"] = f.Origin
+		}
+		if f.Operation != "" {
+			props["operation"] = f.Operation
+		}
+		if f.HTTPStatus != 0 {
+			props["http_status"] = f.HTTPStatus
+		}
+		if f.ServerErrorType != "" {
+			props["server_error_type"] = f.ServerErrorType
 		}
 
 		if err := telemetry.sendEvent(eventFailure, props); err != nil {
