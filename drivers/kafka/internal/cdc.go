@@ -54,8 +54,11 @@ func (k *Kafka) PreCDC(ctx context.Context, streams []types.StreamInterface) err
 	}
 
 	// generate a new consumer group id if not present in state or config
-	groupID = utils.Ternary(groupID == "", utils.Ternary(k.config.ConsumerGroupID != "", k.config.ConsumerGroupID, fmt.Sprintf("olake-consumer-group-%d", time.Now().Unix())), groupID).(string)
+	// a ULID, not a timestamp: two jobs that start in the same second must not share a consumer group
+	groupID = utils.Ternary(groupID == "", utils.Ternary(k.config.ConsumerGroupID != "", k.config.ConsumerGroupID, fmt.Sprintf("olake-consumer-group-%s", utils.ULID())), groupID).(string)
 	k.consumerGroupID = groupID
+	// save it now, not only after the first commit, so a run that fails or is split across processes keeps one group
+	k.state.SetGlobal(map[string]any{"consumer_group_id": groupID})
 	logger.Infof("configured consumer group id: %s", k.consumerGroupID)
 
 	// create a reader manager for kafka
